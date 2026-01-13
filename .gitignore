@@ -1,0 +1,42 @@
+# ===== PYTHON =====
+*.py[cod]
+*.pyo
+*.pyd
+__pycache__/
+.python-version
+.Python
+dist/
+build/
+*.egg-info/
+*.egg
+
+# ===== ВИРТУАЛЬНЫЕ ОКРУЖЕНИЯ =====
+venv/
+.env/
+env/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ===== РЕДАКТОРЫ И IDE =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*.bak
+*~
+
+# ===== СИСТЕМНЫЕ ФАЙЛЫ =====
+.DS_Store
+*.tmp
+*.temp     
+Thumbs.db
+Desktop.ini         
+$RECYCLE.BIN/       
+ehthumbs.db             
+.nfs*               
+.cache/
+.config/
+.local/
+.Trash-* 
