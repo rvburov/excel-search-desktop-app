@@ -1,0 +1,7 @@
+# Для текстовых файлов
+*.py text eol=lf
+*.js text eol=lf
+
+# Для бинарных файлов
+*.jpg binary
+*.png binary
