@@ -6,7 +6,8 @@ import tempfile
 import traceback
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                                QWidget, QLabel, QLineEdit, QPushButton, QProgressBar, 
-                               QMessageBox, QFileDialog, QGroupBox, QSpinBox, QTextEdit, QRadioButton)
+                               QMessageBox, QFileDialog, QGroupBox, QSpinBox, QTextEdit, 
+                               QRadioButton, QCheckBox)
 from PySide6.QtCore import Qt, QThread, Signal
 import openpyxl
 
@@ -24,7 +25,8 @@ class SearchWorker(QThread):
     message = Signal(str)
     finished = Signal(bool, str)
     
-    def __init__(self, search_values, directory, column_index, selected_columns, output_file, sheets_mode):
+    def __init__(self, search_values, directory, column_index, selected_columns, 
+                 output_file, sheets_mode, recursive_search):
         """
         Инициализация рабочего потока.
 
@@ -35,6 +37,7 @@ class SearchWorker(QThread):
             selected_columns (list): номера столбцов для копирования результатов.
             output_file (str): путь к файлу для сохранения результатов.
             sheets_mode (str or list): режим выбора листов ('first', 'all' или список названий).
+            recursive_search (bool): True для рекурсивного поиска в подпапках
         """
         super().__init__()
         self.search_values = search_values
@@ -43,6 +46,7 @@ class SearchWorker(QThread):
         self.selected_columns = selected_columns
         self.output_file = output_file
         self.sheets_mode = sheets_mode
+        self.recursive_search = recursive_search
         self.is_running = True
         
     def read_excel_safely(self, file_path):
@@ -137,9 +141,13 @@ class SearchWorker(QThread):
         except Exception:
             return False
 
-    def get_excel_files_safely(self, directory):
+    def get_excel_files_safely(self, directory, recursive=True):
         """
         Получение списка Excel файлов с пропуском временных файлов и валидацией
+        
+        Параметры:
+            directory (str): путь к корневой директории
+            recursive (bool): если True, выполняется рекурсивный поиск в подпапках
         """
         excel_files = []
         
@@ -152,19 +160,32 @@ class SearchWorker(QThread):
             return []
         
         try:
-            for file in os.listdir(directory):
-                file_path = os.path.join(directory, file)
-                
-                if file.startswith('~$'):
-                    self.message.emit(f"Пропущен временный файл Excel: {file}")
-                    continue
-                
-                if not os.path.isfile(file_path):
-                    continue
-                
-                file_lower = file.lower()
-                if file_lower.endswith(('.xlsx', '.xls', '.xlsm', '.xlsb')):
-                    excel_files.append(file_path)
+            if recursive:
+                for root, dirs, files in os.walk(directory):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        
+                        if file.startswith('~$'):
+                            self.message.emit(f"Пропущен временный файл Excel: {file}")
+                            continue
+                        
+                        file_lower = file.lower()
+                        if file_lower.endswith(('.xlsx', '.xls', '.xlsm', '.xlsb')):
+                            excel_files.append(file_path)
+            else:
+                for file in os.listdir(directory):
+                    file_path = os.path.join(directory, file)
+                    
+                    if file.startswith('~$'):
+                        self.message.emit(f"Пропущен временный файл Excel: {file}")
+                        continue
+                    
+                    if not os.path.isfile(file_path):
+                        continue
+                    
+                    file_lower = file.lower()
+                    if file_lower.endswith(('.xlsx', '.xls', '.xlsm', '.xlsb')):
+                        excel_files.append(file_path)
         
         except PermissionError:
             self.message.emit(f"Нет доступа к директории: {directory}")
@@ -191,13 +212,14 @@ class SearchWorker(QThread):
             
             self.message.emit("Поиск Excel файлов...")
             
-            excel_files = self.get_excel_files_safely(self.directory)
+            excel_files = self.get_excel_files_safely(self.directory, self.recursive_search)
             
             if not excel_files:
                 self.finished.emit(False, "В указанной директории не найдено Excel файлов")
                 return
             
-            self.message.emit(f"Найдено {len(excel_files)} Excel файлов")
+            search_mode = "с подпапками" if self.recursive_search else "без подпапок"
+            self.message.emit(f"Найдено {len(excel_files)} Excel файлов (поиск {search_mode})")
             
             search_data = []  
             for value in self.search_values:
@@ -239,7 +261,13 @@ class SearchWorker(QThread):
                     self.message.emit("Поиск прерван пользователем")
                     break
                     
-                self.message.emit(f"Обработка файла: {os.path.basename(file_path)}")
+                rel_path = os.path.relpath(file_path, self.directory)
+                if rel_path == os.path.basename(file_path):
+                    display_name = os.path.basename(file_path)
+                else:
+                    display_name = rel_path
+                
+                self.message.emit(f"Обработка файла: {display_name}")
                 self.progress.emit(int((i / total_files) * 100))
                 
                 xls = None
@@ -261,13 +289,13 @@ class SearchWorker(QThread):
                         sheets_to_process = [sheet for sheet in self.sheets_mode if sheet in sheet_names]
                     
                     if not sheets_to_process:
-                        error_msg = f"В файле {os.path.basename(file_path)} нет указанных листов"
+                        error_msg = f"В файле {display_name} нет указанных листов"
                         self.message.emit(error_msg)
                         
                         error_row = [error_msg]
                         for _ in self.selected_columns:
                             error_row.append("")
-                        error_row.append(os.path.basename(file_path))
+                        error_row.append(display_name)
                         error_results.append(error_row)
                         continue
 
@@ -279,13 +307,13 @@ class SearchWorker(QThread):
                                 continue
                             
                             if self.column_index - 1 >= len(df.columns):
-                                error_msg = f"В файле {os.path.basename(file_path)} (лист '{sheet_name}') нет столбца {self.column_index}"
+                                error_msg = f"В файле {display_name} (лист '{sheet_name}') нет столбца {self.column_index}"
                                 self.message.emit(error_msg)
                                 
                                 error_row = [error_msg]
                                 for _ in self.selected_columns:
                                     error_row.append("")
-                                error_row.append(f"{os.path.basename(file_path)} (лист: {sheet_name})")
+                                error_row.append(f"{display_name} (лист: {sheet_name})")
                                 error_results.append(error_row)
                                 continue
                             
@@ -319,40 +347,40 @@ class SearchWorker(QThread):
                                         else:
                                             result_row.append("")
                                     
-                                    result_row.append(f"{os.path.basename(file_path)} (лист: {sheet_name})")
+                                    result_row.append(f"{display_name} (лист: {sheet_name})")
                                     all_results.append(result_row)
                                     found_count += 1
                                     
                         except Exception as e:
-                            error_msg = f"Ошибка при обработке листа '{sheet_name}' в файле {os.path.basename(file_path)}: {str(e)}"
+                            error_msg = f"Ошибка при обработке листа '{sheet_name}' в файле {display_name}: {str(e)}"
                             self.message.emit(error_msg)
                             
                             error_row = [error_msg]
                             for _ in self.selected_columns:
                                 error_row.append("")
-                            error_row.append(f"{os.path.basename(file_path)} (лист: {sheet_name})")
+                            error_row.append(f"{display_name} (лист: {sheet_name})")
                             error_results.append(error_row)
                             continue
                             
                 except PermissionError as e:
-                    locked_files.append(os.path.basename(file_path))
-                    error_msg = f"Файл {os.path.basename(file_path)} занят другим процессом"
+                    locked_files.append(display_name)
+                    error_msg = f"Файл {display_name} занят другим процессом"
                     self.message.emit(error_msg)
                     
                     error_row = [error_msg]
                     for _ in self.selected_columns:
                         error_row.append("")
-                    error_row.append(os.path.basename(file_path))
+                    error_row.append(display_name)
                     error_results.append(error_row)
                     
                 except Exception as e:
-                    error_msg = f"Ошибка при обработке файла {file_path}: {str(e)}"
+                    error_msg = f"Ошибка при обработке файла {display_name}: {str(e)}"
                     self.message.emit(error_msg)
                     
                     error_row = [error_msg]
                     for _ in self.selected_columns:
                         error_row.append("")
-                    error_row.append(os.path.basename(file_path))
+                    error_row.append(display_name)
                     error_results.append(error_row)
                 finally:
                     try:
@@ -396,7 +424,9 @@ class SearchWorker(QThread):
                     else:
                         locked_info = ""
                     
-                    final_message = f"Поиск завершен.\nНайдено: {success_count} совпадений\nОшибок: {error_count}{locked_info}"
+                    search_mode_info = " (поиск с подпапками)" if self.recursive_search else " (поиск без подпапок)"
+                    
+                    final_message = f"Поиск завершен{search_mode_info}.\nНайдено: {success_count} совпадений\nОшибок: {error_count}{locked_info}"
                     
                     self.message.emit(f"Найдено {success_count} совпадений, ошибок: {error_count}, занятых файлов: {len(locked_files)}")
                     self.finished.emit(True, final_message)
@@ -458,11 +488,11 @@ class SearchWorker(QThread):
         output_abs = os.path.abspath(output_file)
         search_abs = os.path.abspath(search_directory)
         
-        if os.path.dirname(output_abs) == search_abs:
-            raise ValueError("Файл результатов нельзя сохранять в той же папке, где находятся исходные файлы")
+        if output_abs.startswith(search_abs + os.sep):
+            raise ValueError("Файл результатов нельзя сохранять в той же папке или подпапках, где находятся исходные файлы")
         
         if os.path.exists(output_abs):
-            excel_files = self.get_excel_files_safely(search_directory)
+            excel_files = self.get_excel_files_safely(search_directory, recursive=True)
             for file_path in excel_files:
                 if os.path.abspath(file_path) == output_abs:
                     raise ValueError(f"Файл результатов совпадает с исходным файлом: {os.path.basename(file_path)}")
@@ -496,7 +526,7 @@ class ExcelSearchApp(QMainWindow):
         Создает все виджеты, layouts и подключает сигналы.
         """
         self.setWindowTitle("Программа для поиска информации в Excel файлах")
-        self.setGeometry(100, 100, 500, 940)
+        self.setGeometry(100, 100, 500, 960)
         
         # Центральный виджет
         central_widget = QWidget()
@@ -521,13 +551,27 @@ class ExcelSearchApp(QMainWindow):
         
         # Группа для директории с Excel файлами
         dir_group = QGroupBox("Папка с Excel файлами")
-        dir_layout = QHBoxLayout(dir_group)
+        dir_layout = QVBoxLayout(dir_group)
+        
+        # Верхний ряд: поле ввода и кнопка
+        input_row = QHBoxLayout()
         self.dir_input = QLineEdit()
         self.dir_input.setReadOnly(True)
-        dir_layout.addWidget(self.dir_input)
+        input_row.addWidget(self.dir_input)
         self.browse_dir_button = QPushButton("Выбрать...")
         self.browse_dir_button.clicked.connect(self.browse_directory)
-        dir_layout.addWidget(self.browse_dir_button)
+        input_row.addWidget(self.browse_dir_button)
+        dir_layout.addLayout(input_row)
+        
+        # Нижний ряд: чекбокс для рекурсивного поиска
+        checkbox_row = QHBoxLayout()
+        self.recursive_checkbox = QCheckBox("Рекурсивный поиск")
+        self.recursive_checkbox.setChecked(True)  # По умолчанию включен
+        self.recursive_checkbox.setToolTip("Искать файлы во всех подпапках выбранной директории")
+        checkbox_row.addWidget(self.recursive_checkbox)
+        checkbox_row.addStretch()
+        dir_layout.addLayout(checkbox_row)
+        
         main_layout.addWidget(dir_group)
 
         # Группа для сохранения результатов
@@ -727,13 +771,15 @@ class ExcelSearchApp(QMainWindow):
         selected_columns = self.get_selected_columns()
         output_file = self.save_input.text()
         sheets_mode = self.get_selected_sheets()
+        recursive_search = self.recursive_checkbox.isChecked()
         
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.search_button.setEnabled(False)
         
         self.search_worker = SearchWorker(
-            search_values, directory, column_index, selected_columns, output_file, sheets_mode
+            search_values, directory, column_index, selected_columns, 
+            output_file, sheets_mode, recursive_search
         )
         self.search_worker.progress.connect(self.progress_bar.setValue)
         self.search_worker.message.connect(self.status_label.setText)
